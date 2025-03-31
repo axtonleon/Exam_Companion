@@ -53,11 +53,27 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-4. Create a `.env` file in the project root and add your OpenAI API key:
+4. Set up environment variables:
 
-```
+Create a `.env` file in the project root directory with the following content:
+
+```env
+# OpenAI API Configuration
 OPENAI_API_KEY=your-api-key-here
+
+# Flask Configuration
+FLASK_ENV=development
+FLASK_DEBUG=1
+
+# Optional: Configure session secret key
+FLASK_SECRET_KEY=your-secret-key-here
 ```
+
+The `.env` file is automatically loaded by `python-dotenv` when the application starts. Make sure to:
+
+- Never commit the `.env` file to version control
+- Keep a backup of your API keys
+- Use different API keys for development and production environments
 
 ## Usage
 
@@ -161,8 +177,6 @@ curl -X POST http://localhost:5000/generate/mcq \
 3. Commit your changes
 4. Push to the branch
 5. Create a Pull Request
-
-
 
 ## Acknowledgments
 

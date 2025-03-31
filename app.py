@@ -1,126 +1,25 @@
 import os
-import re
-import tempfile
 import json
-import hashlib
 import uuid
 from flask import Flask, request, jsonify, session
 from flasgger import Swagger, swag_from
-from langchain_community.document_loaders import YoutubeLoader,TextLoader,PyPDFLoader, UnstructuredWordDocumentLoader, UnstructuredPowerPointLoader
-
-from langchain.indexes import VectorstoreIndexCreator
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_openai import ChatOpenAI
 from langchain.chains import RetrievalQA
-from langchain_community.vectorstores import FAISS
-import constants
+from dotenv import load_dotenv
 
-# Set your OpenAI API key
-os.environ["OPENAI_API_KEY"] = constants.APIKEY
+from utils import (
+    get_youtube_index, get_document_index, get_audio_index,
+    fix_json_string
+)
+
+load_dotenv()
 
 app = Flask(__name__)
-# A secret key is required for session handling
-app.secret_key = 'your-very-secret-key'
+app.secret_key = os.getenv('FLASK_SECRET_KEY')
 swagger = Swagger(app)
 
-# Directory storage for persisted indexes
-BASE_DIR = "index_storage"
-YOUTUBE_DIR = os.path.join(BASE_DIR, "youtube")
-DOCUMENT_DIR = os.path.join(BASE_DIR, "document")
-os.makedirs(YOUTUBE_DIR, exist_ok=True)
-os.makedirs(DOCUMENT_DIR, exist_ok=True)
-
 # Global cache: mapping session_id -> list of index objects
-# Each index object is a dictionary with keys: "type" (youtube/document),
-# "id" (unique identifier), and "index" (the persisted index)
 SESSION_INDEX_CACHE = {}
-
-def get_hash(text):
-    """Return a SHA256 hash of the given text."""
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-def get_youtube_index_path(youtube_url):
-    """Return the file path for a YouTube video's persisted index."""
-    filename = f"{get_hash(youtube_url)}.faiss"
-    return os.path.join(YOUTUBE_DIR, filename)
-
-def get_document_index_path(document_id):
-    """Return the file path for a document's persisted index."""
-    filename = f"{get_hash(document_id)}.faiss"
-    return os.path.join(DOCUMENT_DIR, filename)
-
-def fix_json_string(raw_string):
-    # Remove any backslashes that precede a double quote
-    fixed = re.sub(r'\\+"', '"', raw_string)
-    return fixed
-
-def load_and_vectorize_youtube(youtube_url):
-    """Loads a YouTube video transcript and vectorizes it using FAISS."""
-    loader = YoutubeLoader.from_youtube_url(youtube_url, add_video_info=False)
-    docs = loader.load()
-    embeddings = OpenAIEmbeddings()
-    index = VectorstoreIndexCreator(embedding=embeddings, vectorstore_cls=FAISS).from_documents(docs)
-    return index
-
-def load_and_vectorize_document(file_obj, original_filename):
-    """Processes a document (PDF, DOCX, PPTX, TXT) and indexes it using FAISS for retrieval."""
-    suffix = os.path.splitext(original_filename)[1].lower()  # Extracts file extension
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(file_obj.read())
-        tmp_filename = tmp.name
-
-    # Choose the appropriate loader based on file type
-    if suffix == ".pdf":
-        loader = PyPDFLoader(tmp_filename)
-    elif suffix in [".doc", ".docx"]:
-        loader = UnstructuredWordDocumentLoader(tmp_filename)
-    elif suffix in [".ppt", ".pptx"]:
-        loader = UnstructuredPowerPointLoader(tmp_filename)
-    elif suffix == ".txt":
-        loader = TextLoader(tmp_filename)
-
-    # Load document contents
-    docs = loader.load()
-
-    # Create embeddings and FAISS index
-    embeddings = OpenAIEmbeddings()
-    index = VectorstoreIndexCreator(embedding=embeddings, vectorstore_cls=FAISS).from_documents(docs)
-
-    # Cleanup: remove temporary file
-    os.remove(tmp_filename)
-
-    return index
-
-def get_youtube_index(youtube_url):
-    """Retrieves or creates a persisted YouTube index from disk."""
-    index_path = get_youtube_index_path(youtube_url)
-    embeddings = OpenAIEmbeddings()
-    if os.path.exists(index_path):
-        vectorstore = FAISS.load_local(index_path, embeddings,allow_dangerous_deserialization=True)
-        # Wrap it in a simple dict so we can access .vectorstore later
-        return {"type": "youtube", "id": youtube_url, "index": vectorstore}
-    else:
-        index_obj = load_and_vectorize_youtube(youtube_url)
-        index_obj.vectorstore.save_local(index_path)
-        return {"type": "youtube", "id": youtube_url, "index": index_obj.vectorstore}
-
-def get_document_index(document_id, file_obj=None, original_filename=None):
-    """
-    Retrieves or creates a persisted document index from disk.
-    If the index does not exist and file_obj is provided, it creates and saves the index.
-    """
-    index_path = get_document_index_path(document_id)
-    embeddings = OpenAIEmbeddings()
-    if os.path.exists(index_path):
-        vectorstore = FAISS.load_local(index_path, embeddings, allow_dangerous_deserialization=True)
-
-        return {"type": "document", "id": document_id, "index": vectorstore}
-    elif file_obj and original_filename:
-        index_obj = load_and_vectorize_document(file_obj, original_filename)
-        index_obj.vectorstore.save_local(index_path)
-        return {"type": "document", "id": document_id, "index": index_obj.vectorstore}
-    else:
-        return None
 
 def get_session_id():
     """Get or create a unique session ID for the current user session."""
@@ -144,9 +43,9 @@ def home():
       </head>
       <body>
         <h1>Multi-Content Query API</h1>
-        <p>This API allows you to upload content (YouTube videos or documents such as PPT, PDF, DOC) and query them.</p>
+        <p>This API allows you to upload content (YouTube videos, documents, or audio files) and query them.</p>
         <ul>
-          <li><b>/upload</b>: Upload a YouTube URL or a document. Uploaded content is associated with your session.</li>
+          <li><b>/upload</b>: Upload a YouTube URL, document, or audio file. Uploaded content is associated with your session.</li>
           <li><b>/query</b>: Query all content uploaded in your session.</li>
         </ul>
         <p>For detailed API documentation and testing, visit the Swagger UI:</p>
@@ -164,12 +63,12 @@ def home():
             'examples': {
                 'application/json': {
                     "message": "Content uploaded successfully.",
-                    "content_type": "youtube",
-                    "content_id": "https://www.youtube.com/watch?v=abc123"
+                    "content_type": "youtube/document/audio",
+                    "content_id": "https://www.youtube.com/watch?v=abc123 or document_id or audio filename"
                 }
             }
         },
-        400: {'description': 'Missing content (youtube_url or file) in the request.'}
+        400: {'description': 'Missing content (youtube_url, file, or audio) in the request.'}
     },
     'consumes': ['multipart/form-data', 'application/json'],
     'parameters': [
@@ -185,28 +84,26 @@ def home():
             'in': 'formData',
             'type': 'file',
             'required': False,
-            'description': 'A document file (PPT, PDF, DOC) to index.'
+            'description': 'A document or audio file to index.'
         },
         {
             'name': 'document_id',
             'in': 'formData',
             'type': 'string',
             'required': False,
-            'description': 'Optional ID for the document. Defaults to the filename if not provided.'
+            'description': 'Optional ID for the document/audio. Defaults to the filename if not provided.'
         }
     ],
     'tags': ['Upload']
 })
 def upload_content():
     """
-    Uploads content (YouTube URL or document file) and adds its index to the user's session.
+    Uploads content (YouTube URL, document file, or audio file) and adds its index to the user's session.
     """
     session_id = get_session_id()
     if session_id not in SESSION_INDEX_CACHE:
-        SESSION_INDEX_CACHE[session_id] = []  # initialize a list for this session
+        SESSION_INDEX_CACHE[session_id] = []
 
-    # Check if a JSON payload with a YouTube URL was provided
-    # Determine the content type and extract data accordingly
     if request.content_type.startswith("application/json"):
         data = request.get_json()
     elif request.content_type.startswith("multipart/form-data"):
@@ -214,13 +111,11 @@ def upload_content():
     else:
         data = {}
 
+    # Check if a YouTube URL is provided
     if data and 'youtube_url' in data:
         youtube_url = data['youtube_url']
         try:
             index_obj = get_youtube_index(youtube_url)
-            # Initialize session cache if not already present
-            if session_id not in SESSION_INDEX_CACHE:
-                SESSION_INDEX_CACHE[session_id] = []
             SESSION_INDEX_CACHE[session_id].append(index_obj)
             return jsonify({
                 "message": "Content uploaded successfully.",
@@ -230,20 +125,30 @@ def upload_content():
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
-    # Otherwise, check for a file upload (multipart/form-data)
+    # Check for file upload (document or audio)
     if 'file' in request.files:
         file_obj = request.files['file']
         if file_obj.filename == '':
             return jsonify({'error': 'No file selected'}), 400
         document_id = request.form.get('document_id', file_obj.filename)
+        suffix = os.path.splitext(file_obj.filename)[1].lower()
         try:
-            index_obj = get_document_index(document_id, file_obj, file_obj.filename)
+            if suffix in [".pdf", ".doc", ".docx", ".ppt", ".pptx", ".txt"]:
+                index_obj = get_document_index(document_id, file_obj, file_obj.filename)
+                content_type = "document"
+            elif suffix in [".mp3", ".wav", ".m4a", ".ogg"]:
+                index_obj = get_audio_index(document_id, file_obj, file_obj.filename)
+                content_type = "audio"
+            else:
+                return jsonify({'error': 'Unsupported file type'}), 400
+
             if index_obj is None:
-                return jsonify({"error": "Failed to index document."}), 500
+                return jsonify({"error": "Failed to index file."}), 500
+
             SESSION_INDEX_CACHE[session_id].append(index_obj)
             return jsonify({
                 "message": "Content uploaded successfully.",
-                "content_type": "document",
+                "content_type": content_type,
                 "content_id": document_id
             })
         except Exception as e:
@@ -300,19 +205,17 @@ def query_content():
     responses = []
 
     try:
-        # For each uploaded content index, run the query and store the response
+        # Run the query on each content index and aggregate responses.
         for content in SESSION_INDEX_CACHE[session_id]:
             llm = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0.6)
             retriever = content["index"].as_retriever()
             qa_chain = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever)
             result = qa_chain.invoke({"query": query_text})
             responses.append(f"[{content['type']}:{content['id']}] {result}")
-        # Combine responses from each content source
         combined_response = "\n".join(responses)
         return jsonify({"answer": combined_response})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-    
 
 @app.route('/generate/mcq', methods=['POST'])
 @swag_from({
@@ -362,22 +265,17 @@ def generate_mcq():
     difficulty = data.get('difficulty', "medium")
     session_id = get_session_id()
 
-    # Check if there are any uploaded materials in the session.
     if session_id not in SESSION_INDEX_CACHE or not SESSION_INDEX_CACHE[session_id]:
         return jsonify({'error': 'Please upload materials before generating MCQs.'}), 404
 
-    # Use all materials in the session
     selected_indexes = SESSION_INDEX_CACHE[session_id]
-
     combined_context = ""
-    # Retrieve context from each indexed material
     for idx in selected_indexes:
         retriever = idx['index'].as_retriever()
         retrieved_docs = retriever.get_relevant_documents("summarize")
         for doc in retrieved_docs:
             combined_context += doc.page_content + "\n"
 
-    # Construct the AI prompt directly for LLM invocation.
     prompt = f"""
 You are an AI assistant that generates multiple-choice questions from study material.
 Based on the following content, generate {num_questions} multiple-choice questions.
@@ -404,15 +302,13 @@ For example:
     }}
 ]
 """
-
     llm = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0.7)
     response = llm.invoke(prompt)
-    
-    # If response is an AIMessage, extract its content.
+
     if hasattr(response, "content"):
         response = response.content.strip()
         fixed_string = fix_json_string(response)
-    # Attempt to parse the response string as JSON.
+
     try:
         parsed_response = json.loads(fixed_string)
     except Exception as e:
@@ -420,6 +316,104 @@ For example:
 
     return jsonify({"mcqs": parsed_response})
 
+@app.route('/generate/flashcards', methods=['POST'])
+@swag_from({
+    'responses': {
+        200: {
+            'description': 'Flashcards generated successfully.',
+            'examples': {
+                'application/json': {
+                    "flashcards": [
+                        {
+                            "question": "What is photosynthesis?",
+                            "answer": "Photosynthesis is the process by which plants convert sunlight, water, and CO2 into energy."
+                        },
+                        {
+                            "question": "What is the capital of France?",
+                            "answer": "Paris is the capital of France."
+                        }
+                    ]
+                }
+            }
+        },
+        400: {'description': 'Invalid request payload.'},
+        404: {'description': 'Please upload materials before generating flashcards.'}
+    },
+    'parameters': [
+        {
+            'name': 'body',
+            'in': 'body',
+            'required': True,
+            'schema': {
+                'type': 'object',
+                'properties': {
+                    'num_flashcards': {
+                        'type': 'integer',
+                        'example': 5
+                    }
+                }
+            }
+        }
+    ],
+    'tags': ['Generate Flashcards']
+})
+def generate_flashcards():
+    data = request.get_json()
+    num_flashcards = data.get('num_flashcards', 5)
+    session_id = get_session_id()
+
+    if session_id not in SESSION_INDEX_CACHE or not SESSION_INDEX_CACHE[session_id]:
+        return jsonify({'error': 'Please upload materials before generating flashcards.'}), 404
+
+    # Aggregate content from all uploaded materials
+    selected_indexes = SESSION_INDEX_CACHE[session_id]
+    combined_context = ""
+    for idx in selected_indexes:
+        retriever = idx['index'].as_retriever()
+        retrieved_docs = retriever.get_relevant_documents("summarize")
+        for doc in retrieved_docs:
+            combined_context += doc.page_content + "\n"
+
+    # Construct the prompt for flashcard generation
+    prompt = f"""
+You are an AI assistant specialized in creating flashcards for learning.
+Based on the following study material, generate {num_flashcards} flashcards.
+Each flashcard should consist of a 'question' that tests understanding of the material and an 'answer' providing a concise explanation.
+Content:
+{combined_context}
+Respond in JSON format as a list of objects. Each object must contain the keys:
+- "question": the flashcard question.
+- "answer": the flashcard answer.
+
+For example:
+[
+    {{
+        "question": "What is photosynthesis?",
+        "answer": "Photosynthesis is the process by which plants convert sunlight, water, and CO2 into energy."
+    }},
+    {{
+        "question": "What is the capital of France?",
+        "answer": "Paris is the capital of France."
+    }}
+]
+"""
+
+    llm = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0.7)
+    response = llm.invoke(prompt)
+
+    # If the response is an AIMessage, extract its content and fix formatting if necessary.
+    if hasattr(response, "content"):
+        response = response.content.strip()
+        fixed_string = fix_json_string(response)
+    else:
+        fixed_string = response
+
+    try:
+        parsed_response = json.loads(fixed_string)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    return jsonify({"flashcards": parsed_response})
 
 
 @app.route('/materials', methods=['GET'])
@@ -434,7 +428,8 @@ def get_materials():
           application/json: {
             "materials": [
               {"id": "https://www.youtube.com/watch?v=abc123", "type": "youtube"},
-              {"id": "example_document.pdf", "type": "document"}
+              {"id": "example_document.pdf", "type": "document"},
+              {"id": "lecture_audio.mp3", "type": "audio"}
             ]
           }
       404:
@@ -446,7 +441,6 @@ def get_materials():
     if session_id not in SESSION_INDEX_CACHE or not SESSION_INDEX_CACHE[session_id]:
         return jsonify({'error': 'No content indexed in your session.'}), 404
 
-    # Create a list of materials with their id and type.
     materials = [
         {"id": content["id"], "type": content["type"]}
         for content in SESSION_INDEX_CACHE[session_id]

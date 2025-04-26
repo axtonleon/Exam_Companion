@@ -3,7 +3,7 @@ import json
 import uuid
 from typing import Optional
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_openai import ChatOpenAI
 from langchain.chains import RetrievalQA
@@ -41,26 +41,11 @@ async def get_session_id(request: Request) -> str:
         return str(uuid.uuid4())
     return request.cookies.get("session_id")
 
-@app.get("/", response_class=HTMLResponse)
-async def home():
-    """Home route that explains the API."""
-    return """
-    <html>
-      <head>
-        <title>Multi-Content Query API</title>
-      </head>
-      <body>
-        <h1>Multi-Content Query API</h1>
-        <p>This API allows you to upload content (YouTube videos, documents, or audio files) and query them.</p>
-        <ul>
-          <li><b>/upload</b>: Upload a YouTube URL, document, or audio file. Uploaded content is associated with your session.</li>
-          <li><b>/query</b>: Query all content uploaded in your session.</li>
-        </ul>
-        <p>For detailed API documentation and testing, visit the Swagger UI:</p>
-        <a href="/docs" target="_blank">API Documentation</a>
-      </body>
-    </html>
-    """
+@app.get("/")
+async def root():
+    """Redirect root URL to API documentation."""
+    return RedirectResponse(url="/docs")
+
 
 @app.post("/upload", response_model=UploadResponse)
 async def upload(

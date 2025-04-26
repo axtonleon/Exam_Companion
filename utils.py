@@ -11,6 +11,12 @@ from langchain_community.document_loaders import (
 from langchain.indexes import VectorstoreIndexCreator
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
+from dotenv import load_dotenv
+from models import TranscriptResponse
+from fastapi import HTTPException, Request
+
+load_dotenv()
+
 
 # Custom Exceptions
 class FileProcessingError(Exception):
@@ -37,17 +43,19 @@ class AudioProcessingError(FileProcessingError):
     """Raised when there's an error processing an audio file."""
     pass
 
-# Directory storage for persisted indexes
+# Directory storage for persisted indexes and transcripts
 BASE_DIR = "index_storage"
 YOUTUBE_DIR = os.path.join(BASE_DIR, "youtube")
 DOCUMENT_DIR = os.path.join(BASE_DIR, "document")
 AUDIO_DIR = os.path.join(BASE_DIR, "audio")
+TRANSCRIPT_DIR = os.path.join(BASE_DIR, "transcripts")
 
 # Create necessary directories
 try:
     os.makedirs(YOUTUBE_DIR, exist_ok=True)
     os.makedirs(DOCUMENT_DIR, exist_ok=True)
     os.makedirs(AUDIO_DIR, exist_ok=True)
+    os.makedirs(TRANSCRIPT_DIR, exist_ok=True)
 except OSError as e:
     raise FileProcessingError(f"Failed to create storage directories: {str(e)}")
 
@@ -144,23 +152,53 @@ def fix_json_string(raw_string: str) -> str:
     except Exception as e:
         raise FileProcessingError(f"Failed to fix JSON string: {str(e)}")
 
+def save_transcript(content: str, source_id: str, source_type: str) -> str:
+    """
+    Saves transcript content to a text file.
+    """
+    try:
+        os.makedirs(TRANSCRIPT_DIR, exist_ok=True)
+        
+        if source_type == "youtube":
+            from urllib.parse import urlparse, parse_qs
+            parsed_url = urlparse(source_id)
+            video_id = parse_qs(parsed_url.query).get('v', [''])[0]
+            if not video_id:
+                raise FileProcessingError("Could not extract video ID from URL")
+            filename = f"{video_id}_{source_type}.txt"
+        else:
+            filename = f"{get_hash(source_id)}_{source_type}.txt"
+            
+        filepath = os.path.join(TRANSCRIPT_DIR, filename)
+        
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(content)
+            
+        if not os.path.exists(filepath):
+            raise FileProcessingError("Failed to verify transcript file creation")
+            
+        return filepath
+    except Exception as e:
+        raise FileProcessingError(f"Failed to save transcript: {str(e)}")
+
 def load_and_vectorize_youtube(youtube_url: str) -> Any:
     """
     Loads a YouTube video transcript and vectorizes it using FAISS.
-    
-    Args:
-        youtube_url (str): The YouTube URL to process
-        
-    Returns:
-        Any: The vectorized index
-        
-    Raises:
-        YouTubeProcessingError: If YouTube processing fails
-        IndexCreationError: If index creation fails
+    Also saves the transcript as a text file.
     """
     try:
         loader = YoutubeLoader.from_youtube_url(youtube_url, add_video_info=False)
         docs = loader.load()
+        
+        if not docs:
+            raise YouTubeProcessingError("No content loaded from YouTube")
+            
+        transcript_content = "\n\n".join(doc.page_content for doc in docs)
+        if not transcript_content.strip():
+            raise YouTubeProcessingError("Empty transcript content")
+            
+        transcript_path = save_transcript(transcript_content, youtube_url, "youtube")
+        
         embeddings = OpenAIEmbeddings()
         index = VectorstoreIndexCreator(embedding=embeddings, vectorstore_cls=FAISS).from_documents(docs)
         return index
@@ -221,40 +259,36 @@ def load_and_vectorize_document(file_obj: Any, original_filename: str) -> Any:
                 pass
 
 def load_and_vectorize_audio(file_obj: Any, original_filename: str) -> Any:
-    """
-    Processes an audio file by transcribing it and creating a vectorized index.
-    
-    Args:
-        file_obj: The audio file object
-        original_filename (str): The original filename
-        
-    Returns:
-        Any: The vectorized index
-        
-    Raises:
-        FileTypeError: If file type is not supported
-        AudioProcessingError: If audio processing fails
-        IndexCreationError: If index creation fails
-    """
     suffix = os.path.splitext(original_filename)[1].lower()
     if suffix not in [".mp3", ".wav", ".m4a", ".ogg"]:
         raise FileTypeError(f"Unsupported audio file type: {suffix}")
-    
+
     tmp_filename = None
     try:
+        # Read bytes synchronously from the underlying file
+        data = file_obj.file.read()
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            tmp.write(file_obj.read())
+            tmp.write(data)
             tmp_filename = tmp.name
 
         loader = AssemblyAIAudioTranscriptLoader(file_path=tmp_filename)
         docs = loader.load()
+
+        transcript_content = "\n\n".join(doc.page_content for doc in docs)
+        save_transcript(transcript_content, original_filename, "audio")
+
         embeddings = OpenAIEmbeddings()
-        index = VectorstoreIndexCreator(embedding=embeddings, vectorstore_cls=FAISS).from_documents(docs)
+        index = VectorstoreIndexCreator(
+            embedding=embeddings,
+            vectorstore_cls=FAISS
+        ).from_documents(docs)
         return index
+
     except Exception as e:
         if "audio" in str(e).lower() or "transcript" in str(e).lower():
-            raise AudioProcessingError(f"Failed to process audio file: {str(e)}")
-        raise IndexCreationError(f"Failed to create index for audio file: {str(e)}")
+            raise AudioProcessingError(f"Failed to process audio file: {e}")
+        raise IndexCreationError(f"Failed to create index for audio file: {e}")
+
     finally:
         if tmp_filename and os.path.exists(tmp_filename):
             try:
@@ -262,30 +296,30 @@ def load_and_vectorize_audio(file_obj: Any, original_filename: str) -> Any:
             except OSError:
                 pass
 
+
 def get_youtube_index(youtube_url: str) -> Dict[str, Any]:
     """
     Retrieves or creates a persisted YouTube index from disk.
-    
-    Args:
-        youtube_url (str): The YouTube URL
-        
-    Returns:
-        Dict[str, Any]: The index object with metadata
-        
-    Raises:
-        YouTubeProcessingError: If YouTube processing fails
-        IndexCreationError: If index creation or loading fails
     """
     try:
+        # Extract video ID from URL
+        from urllib.parse import urlparse, parse_qs
+        parsed_url = urlparse(youtube_url)
+        video_id = parse_qs(parsed_url.query).get('v', [''])[0]
+        if not video_id:
+            raise YouTubeProcessingError("Could not extract video ID from URL")
+
         index_path = get_youtube_index_path(youtube_url)
         embeddings = OpenAIEmbeddings()
+        
         if os.path.exists(index_path):
             vectorstore = FAISS.load_local(index_path, embeddings, allow_dangerous_deserialization=True)
-            return {"type": "youtube", "id": youtube_url, "index": vectorstore}
+            return {"type": "youtube", "id": video_id, "index": vectorstore}
         else:
             index_obj = load_and_vectorize_youtube(youtube_url)
             index_obj.vectorstore.save_local(index_path)
-            return {"type": "youtube", "id": youtube_url, "index": index_obj.vectorstore}
+            return {"type": "youtube", "id": video_id, "index": index_obj.vectorstore}
+            
     except Exception as e:
         if "youtube" in str(e).lower():
             raise YouTubeProcessingError(f"Failed to process YouTube video: {str(e)}")

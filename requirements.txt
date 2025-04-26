@@ -1,12 +1,34 @@
-flask==3.0.2
-flasgger==0.9.7.1
-langchain==0.1.12
-langchain-community==0.0.28
-langchain-openai==0.0.8
-faiss-cpu==1.8.0
-python-dotenv==1.0.1
-openai==1.12.0
-unstructured==0.12.3
-PyPDF2==3.0.1
-python-docx==1.1.0
-python-pptx==0.6.23 
+
+# Core Framework
+fastapi
+uvicorn
+python-multipart
+pydantic
+
+# LangChain and Related
+langchain
+langchain-community
+langchain-openai
+openai
+
+# Vector Store
+faiss-cpu
+
+# Document Processing
+unstructured
+PyPDF2
+python-docx
+python-pptx
+
+# YouTube Processing
+youtube-transcript-api
+pytube
+
+# Environment and Utils
+python-dotenv
+requests
+typing-extensions
+
+# Optional: Document Extraction Dependencies
+pdf2image
+

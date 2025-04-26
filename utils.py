@@ -12,7 +12,7 @@ from langchain.indexes import VectorstoreIndexCreator
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
 from dotenv import load_dotenv
-from models import TranscriptResponse
+from schemas import TranscriptResponse
 from fastapi import HTTPException, Request
 
 load_dotenv()

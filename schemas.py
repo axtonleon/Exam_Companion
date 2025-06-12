@@ -44,3 +44,8 @@ class ErrorResponse(BaseModel):
 
 class MaterialsResponse(BaseModel):
     materials: List[Dict[str, str]]
+    
+    
+class SummaryResponse(BaseModel):
+    summary: dict
+    

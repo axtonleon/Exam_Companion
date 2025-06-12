@@ -2,21 +2,34 @@ import os
 import re
 import hashlib
 import tempfile
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.document_loaders import (
     YoutubeLoader, TextLoader, PyPDFLoader,
     UnstructuredWordDocumentLoader, UnstructuredPowerPointLoader,
     AssemblyAIAudioTranscriptLoader
 )
 from langchain.indexes import VectorstoreIndexCreator
-from langchain_openai import OpenAIEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import FAISS
+from langchain_community.document_loaders import TextLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_core.documents import Document
 from dotenv import load_dotenv
 from schemas import TranscriptResponse
 from fastapi import HTTPException, Request
+import logging
+
+logging.basicConfig(level=logging.DEBUG)
 
 load_dotenv()
 
+# Initialize text splitter
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=1000,
+    chunk_overlap=200,
+    length_function=len,
+)
 
 # Custom Exceptions
 class FileProcessingError(Exception):
@@ -76,6 +89,21 @@ def get_hash(text: str) -> str:
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
     except Exception as e:
         raise FileProcessingError(f"Failed to generate hash: {str(e)}")
+    
+def _get_content_filepath(content: Dict) -> Optional[str]:
+    """Helper to get the path to the saved text/transcript based on content type and ID hash."""
+    content_type = content.get("type")
+    # Youtube uses video_id directly, others use the stored hash
+    content_id = content.get("id_hash", content.get("id")) 
+    
+    if not content_type or not content_id:
+        return None
+        
+    filename = f"{content_id}_{content_type}.txt"
+    filepath = os.path.join(TRANSCRIPT_DIR, filename)
+    logging.info(f"DEBUG: Looking for file: {filepath}") # For debugging
+     # print(f"DEBUG: Looking for file: {filepath}") # For debugging
+    return filepath if os.path.exists(filepath) else None
 
 def get_youtube_index_path(youtube_url: str) -> str:
     """
@@ -95,6 +123,7 @@ def get_youtube_index_path(youtube_url: str) -> str:
         return os.path.join(YOUTUBE_DIR, filename)
     except Exception as e:
         raise FileProcessingError(f"Failed to generate YouTube index path: {str(e)}")
+
 
 def get_document_index_path(document_id: str) -> str:
     """
@@ -168,6 +197,7 @@ def save_transcript(content: str, source_id: str, source_type: str) -> str:
             filename = f"{video_id}_{source_type}.txt"
         else:
             filename = f"{get_hash(source_id)}_{source_type}.txt"
+            logging.info(f"DEBUG: Saving transcript as {filename}") # For debugging
             
         filepath = os.path.join(TRANSCRIPT_DIR, filename)
         
@@ -199,7 +229,7 @@ def load_and_vectorize_youtube(youtube_url: str) -> Any:
             
         transcript_path = save_transcript(transcript_content, youtube_url, "youtube")
         
-        embeddings = OpenAIEmbeddings()
+        embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
         index = VectorstoreIndexCreator(embedding=embeddings, vectorstore_cls=FAISS).from_documents(docs)
         return index
     except Exception as e:
@@ -207,7 +237,7 @@ def load_and_vectorize_youtube(youtube_url: str) -> Any:
             raise YouTubeProcessingError(f"Failed to process YouTube video: {str(e)}")
         raise IndexCreationError(f"Failed to create index for YouTube video: {str(e)}")
 
-def load_and_vectorize_document(file_obj: Any, original_filename: str) -> Any:
+async def load_and_vectorize_document(file_obj: Any, original_filename: str) -> Any:
     """
     Processes a document and indexes it using FAISS for retrieval.
     
@@ -229,8 +259,9 @@ def load_and_vectorize_document(file_obj: Any, original_filename: str) -> Any:
 
     tmp_filename = None
     try:
+        contents = await file_obj.read() # Use await to read the file content
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            tmp.write(file_obj.read())
+            tmp.write(contents) # Write the read content to the temp file
             tmp_filename = tmp.name
 
         # Choose the appropriate loader based on file type
@@ -244,7 +275,13 @@ def load_and_vectorize_document(file_obj: Any, original_filename: str) -> Any:
             loader = TextLoader(tmp_filename)
 
         docs = loader.load()
-        embeddings = OpenAIEmbeddings()
+        logging.info(f"Loaded {len(docs)} docs from {original_filename}")
+        if docs:
+            full_text = "\n\n".join(doc.page_content for doc in docs)
+            # We use original_filename as the ID to hash for the transcript file.
+            save_transcript(full_text, original_filename, "document")
+            logging.info(f"Saved transcript for {original_filename}") # For debugging
+        embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
         index = VectorstoreIndexCreator(embedding=embeddings, vectorstore_cls=FAISS).from_documents(docs)
         return index
     except Exception as e:
@@ -273,11 +310,12 @@ def load_and_vectorize_audio(file_obj: Any, original_filename: str) -> Any:
 
         loader = AssemblyAIAudioTranscriptLoader(file_path=tmp_filename)
         docs = loader.load()
-
-        transcript_content = "\n\n".join(doc.page_content for doc in docs)
-        save_transcript(transcript_content, original_filename, "audio")
-
-        embeddings = OpenAIEmbeddings()
+        
+        if docs: # If we have transcript content, save it to disk.
+            transcript_content = "\n\n".join(doc.page_content for doc in docs)
+            save_transcript(transcript_content, original_filename, "audio")
+            
+        embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
         index = VectorstoreIndexCreator(
             embedding=embeddings,
             vectorstore_cls=FAISS
@@ -310,7 +348,7 @@ def get_youtube_index(youtube_url: str) -> Dict[str, Any]:
             raise YouTubeProcessingError("Could not extract video ID from URL")
 
         index_path = get_youtube_index_path(youtube_url)
-        embeddings = OpenAIEmbeddings()
+        embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
         
         if os.path.exists(index_path):
             vectorstore = FAISS.load_local(index_path, embeddings, allow_dangerous_deserialization=True)
@@ -325,7 +363,7 @@ def get_youtube_index(youtube_url: str) -> Dict[str, Any]:
             raise YouTubeProcessingError(f"Failed to process YouTube video: {str(e)}")
         raise IndexCreationError(f"Failed to create/load index for YouTube video: {str(e)}")
 
-def get_document_index(document_id: str, file_obj: Optional[Any] = None, original_filename: Optional[str] = None) -> Optional[Dict[str, Any]]:
+async def get_document_index(document_id: str, file_obj: Optional[Any] = None, original_filename: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
     Retrieves or creates a persisted document index from disk.
     
@@ -344,12 +382,12 @@ def get_document_index(document_id: str, file_obj: Optional[Any] = None, origina
     """
     try:
         index_path = get_document_index_path(document_id)
-        embeddings = OpenAIEmbeddings()
+        embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
         if os.path.exists(index_path):
             vectorstore = FAISS.load_local(index_path, embeddings, allow_dangerous_deserialization=True)
             return {"type": "document", "id": document_id, "index": vectorstore}
         elif file_obj and original_filename:
-            index_obj = load_and_vectorize_document(file_obj, original_filename)
+            index_obj = await load_and_vectorize_document(file_obj, original_filename)
             index_obj.vectorstore.save_local(index_path)
             return {"type": "document", "id": document_id, "index": index_obj.vectorstore}
         else:
@@ -378,7 +416,7 @@ def get_audio_index(audio_id: str, file_obj: Optional[Any] = None, original_file
     """
     try:
         index_path = get_audio_index_path(audio_id)
-        embeddings = OpenAIEmbeddings()
+        embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
         if os.path.exists(index_path):
             vectorstore = FAISS.load_local(index_path, embeddings, allow_dangerous_deserialization=True)
             return {"type": "audio", "id": audio_id, "index": vectorstore}
@@ -392,3 +430,4 @@ def get_audio_index(audio_id: str, file_obj: Optional[Any] = None, original_file
         if "audio" in str(e).lower() or "transcript" in str(e).lower():
             raise AudioProcessingError(f"Failed to process audio file: {str(e)}")
         raise IndexCreationError(f"Failed to create/load index for audio file: {str(e)}") 
+

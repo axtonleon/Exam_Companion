@@ -5,13 +5,16 @@ import uuid
 from schemas import (
     UploadResponse, QueryRequest, QueryResponse,
     MCQRequest, MCQResponse, FlashcardRequest,
-    FlashcardResponse, MaterialsResponse, TranscriptResponse
+    FlashcardResponse, MaterialsResponse, TranscriptResponse, SummaryResponse
 )
 from services import (
     process_youtube_upload, process_file_upload, process_query,
     generate_mcqs, generate_flashcards, get_materials_list,
-    get_transcript_content, SESSION_INDEX_CACHE
+    get_transcript_content, generate_summary, SESSION_INDEX_CACHE
 )
+import logging
+
+logging.basicConfig(level=logging.DEBUG)
 
 router = APIRouter()
 
@@ -44,7 +47,7 @@ async def upload_content(
     try:
         if youtube_url:
             return process_youtube_upload(youtube_url, session_id)
-        return process_file_upload(file, session_id)
+        return await process_file_upload(file, session_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -86,3 +89,13 @@ async def get_transcript(
 ):
     """Retrieve the transcript for a YouTube video or audio file using its ID."""
     return get_transcript_content(content_type, content_id)
+
+@router.post("/generate/summary/{content_type}/{content_id}", response_model=SummaryResponse, tags=["generate"])
+async def generate_summary_endpoint(request: Request,   
+                                    content_type: str,
+                                    content_id: str
+    ):
+    """Generate a summary from uploaded content."""
+    session_id = await get_session_id(request)
+    logging.info(f"Generating summary for {content_type}:{content_id} in session {session_id}")
+    return await generate_summary(content_type, content_id)

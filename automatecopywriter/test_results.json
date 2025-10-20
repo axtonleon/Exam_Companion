@@ -1,0 +1,86 @@
+[
+  {
+    "endpoint": "/",
+    "method": "GET",
+    "status": "PASS",
+    "details": "Welcome to Automate Copywriter API - 6 endpoints available",
+    "timestamp": "2025-10-18 05:38:08"
+  },
+  {
+    "endpoint": "/health",
+    "method": "GET",
+    "status": "PASS",
+    "details": "Status: healthy",
+    "timestamp": "2025-10-18 05:38:08"
+  },
+  {
+    "endpoint": "/api/v1/content/health",
+    "method": "GET",
+    "status": "PASS",
+    "details": "Dependencies: google_api=healthy, jina_api=healthy, content_agents=healthy",
+    "timestamp": "2025-10-18 05:38:08"
+  },
+  {
+    "endpoint": "/api/v1/content/content-types",
+    "method": "GET",
+    "status": "PASS",
+    "details": "Found 6 content types",
+    "timestamp": "2025-10-18 05:38:08"
+  },
+  {
+    "endpoint": "/api/v1/content/tones",
+    "method": "GET",
+    "status": "PASS",
+    "details": "Found 7 tones",
+    "timestamp": "2025-10-18 05:38:08"
+  },
+  {
+    "endpoint": "/api/v1/content/generate",
+    "method": "POST",
+    "status": "PASS",
+    "details": "Generated 1003 chars in 91.6s",
+    "timestamp": "2025-10-18 05:39:40"
+  },
+  {
+    "endpoint": "/api/v1/content/generate/blog-post",
+    "method": "POST",
+    "status": "PASS",
+    "details": "Generated 4104 chars",
+    "timestamp": "2025-10-18 05:39:53"
+  },
+  {
+    "endpoint": "/api/v1/content/keyword-research",
+    "method": "POST",
+    "status": "PASS",
+    "details": "Keyword research completed",
+    "timestamp": "2025-10-18 05:40:03"
+  },
+  {
+    "endpoint": "/api/v1/content/optimize-seo",
+    "method": "POST",
+    "status": "PASS",
+    "details": "SEO optimization completed",
+    "timestamp": "2025-10-18 05:40:03"
+  },
+  {
+    "endpoint": "/api/v1/content/analyze-content",
+    "method": "POST",
+    "status": "PASS",
+    "details": "Analyzed 31 words",
+    "timestamp": "2025-10-18 05:40:03"
+  },
+  {
+    "endpoint": "/api/v1/content/history",
+    "method": "GET",
+    "status": "PASS",
+    "details": "Found 2 total generations",
+    "timestamp": "2025-10-18 05:40:03"
+  },
+  {
+    "endpoint": "/api/v1/content/stats",
+    "method": "GET",
+    "status": "PASS",
+    "details": "2 generations, 100.0% success rate",
+    "timestamp": "2025-10-18 05:40:03"
+  }
+]

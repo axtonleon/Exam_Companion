@@ -355,14 +355,19 @@ async def generate_summary(content_type: str, content_id: str) -> SummaryRespons
 
         # Make a separate, simple LLM call for the formatting task.
         json_response_obj = await formatting_llm.ainvoke(format_prompt)
-        json_response_text = json_response_obj.content
-
+        response_content = json_response_obj.content
+        if "```json\n" in response_content:
+            response_content = response_content.split("```json\n")[1]
+        if "\n```" in response_content:
+            response_content = response_content.split("\n```")[0]
+            
+        response_content = json.loads(response_content)
         # Use your robust parser to clean and load the JSON string.
-        standardized_dict = standardize_json_response(json_response_text)
-        logging.info(f"DEBUG: Final JSON summary: {standardized_dict}") # For debugging
-
+        
+        logging.info(f"DEBUG: Final JSON summary: {response_content}") # For debugging
+        
         # Return the final, structured response.
-        return SummaryResponse(summary=standardized_dict)
+        return SummaryResponse(summary=response_content)
 
     except HTTPException as e:
         # Pass through exceptions from your JSON parser

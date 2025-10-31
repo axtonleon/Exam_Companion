@@ -72,7 +72,7 @@ class ContentGenerationAgents:
                 analyze_content_keywords
             ],
             model=self.model,
-            additional_authorized_imports=["re"],
+            additional_authorized_imports=["re", "json"],
         )
     
     def generate_content(

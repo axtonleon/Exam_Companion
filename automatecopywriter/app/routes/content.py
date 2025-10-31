@@ -8,14 +8,21 @@ from fastapi.responses import JSONResponse
 from typing import List, Optional
 import logging
 
-from app.services.content_service import get_content_service, ContentGenerationService
+from app.services.content_service import (
+    get_content_service,
+    ContentGenerationService,
+    get_landing_page_service,
+    LandingPageService,
+)
 from app.services.seo_service import get_seo_service, SEOService
 from app.schemas.content import (
     ContentGenerationRequest,
     ContentGenerationResponse,
     ContentGenerationStatus,
     HealthCheckResponse,
-    ErrorResponse
+    ErrorResponse,
+    LandingPageRequest,
+    LandingPageResponse,
 )
 from app.config import settings
 
@@ -440,3 +447,23 @@ async def analyze_content(
             status_code=500,
             detail="An unexpected error occurred during content analysis"
         )
+
+
+@router.post(
+    "/landing-page",
+    response_model=LandingPageResponse,
+    summary="Build landing page structure",
+    description="Return structured JSON for a landing page based on provided columns.",
+)
+async def build_landing_page(
+    request: LandingPageRequest,
+    landing_service: LandingPageService = Depends(get_landing_page_service),
+) -> LandingPageResponse:
+    """
+    Build a landing page JSON from tool name, feature summary, keywords, SEO intent, and subjects.
+    """
+    try:
+        return landing_service.build_landing_page(request)
+    except Exception as e:
+        logger.error(f"Error building landing page: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to build landing page")

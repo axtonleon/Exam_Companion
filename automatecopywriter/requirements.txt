@@ -1,33 +1,33 @@
 # FastAPI and web framework dependencies
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-pydantic==2.5.0
-pydantic-settings==2.1.0
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
 
 # AI and ML dependencies
-smolagents==0.1.0
-litellm==1.17.0
-openai==1.3.7
+smolagents
+litellm
+openai
 
 # Web scraping and HTTP requests
-requests==2.31.0
-httpx==0.28.1
-ddgs==9.6.1
+requests
+httpx
+ddgs
 
 # Environment and configuration
-python-dotenv==1.0.0
+python-dotenv
 
 # Data processing and utilities
-python-multipart==0.0.6
-jinja2==3.1.2
+python-multipart
+jinja2
 
 
 # Security and validation
-python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
+python-jose[cryptography]
+passlib[bcrypt]
 
 # Logging and monitoring
-structlog==23.2.0
+structlog
 
 # Optional: Database support (uncomment if needed)
 # sqlalchemy==2.0.23

@@ -4,8 +4,10 @@ Handles business logic for AI agent orchestration and content generation.
 """
 
 import time
+import json
+import re
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from datetime import datetime
 
 from app.tools.agents import get_content_agents
@@ -17,6 +19,14 @@ from app.schemas.content import (
     TargetAudience
 )
 from app.config import settings
+from app.schemas.content import (
+    LandingPageRequest,
+    LandingPageResponse,
+    LandingPageSEO,
+    HowItWorksStep,
+    FAQItem,
+)
+from app.tools.agents import get_content_agents
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -182,10 +192,7 @@ class ContentGenerationService:
                 **generation_params
             )
         
-        # Apply length constraints if specified
-        if request.max_length and len(content) > request.max_length:
-            content = content[:request.max_length] + "..."
-        
+        # Return full content without truncation
         return content
     
     def get_generation_history(self, limit: int = 10) -> Dict[str, Any]:
@@ -252,3 +259,158 @@ content_service = ContentGenerationService()
 def get_content_service() -> ContentGenerationService:
     """Get the content generation service instance."""
     return content_service
+
+
+class LandingPageService:
+    """Service to build structured landing page JSON from column-like inputs."""
+
+    def __init__(self) -> None:
+        self.agents = get_content_agents()
+
+    def build_landing_page(self, request: LandingPageRequest) -> LandingPageResponse:
+        """Build the landing page structure based on provided inputs."""
+        page_title_default = request.page_title_override or request.tool_name.strip()
+        page_subtitle_default = (request.page_subtitle_override or request.feature_summary.strip())[:300]
+
+        prompt = (
+            "You are an expert product marketer and SEO specialist. Create a landing page JSON strictly matching this schema: "
+            '{"page_title": string, "page_subtitle": string, "how_it_works": [{"step": number, "title": string, "description": string}], '
+            '"faq": [{"question": string, "answer": string}], "seo": {"meta_title": string, "meta_description": string, "extracted_keywords": [string]}}.'
+        )
+        prompt += "\nUse the inputs below. Keep copy concise, clear, and conversion-oriented. Incorporate the primary keywords naturally.\n"
+        prompt += f"Tool Name: {request.tool_name}\n"
+        prompt += f"Feature Summary: {request.feature_summary}\n"
+        prompt += f"Primary Keywords: {', '.join(request.primary_keywords)}\n"
+        prompt += f"SEO Intent: {request.seo_intent.value}\n"
+        prompt += f"Subjects: {', '.join(request.subjects)}\n"
+        prompt += (
+            "Rules: First, if tools are available, analyze keywords and topic to inform copy. "
+            "Return ONLY minified JSON with the exact keys. Steps should be 2-4 items starting at 1. "
+            "FAQ should contain 2-4 items. The 'seo.meta_title' ≤ 60 chars; 'seo.meta_description' 150-180 chars; include 5-12 extracted_keywords."
+        )
+
+        ai_output = None
+        try:
+            # Use the agent to produce JSON output
+            ai_raw = self.agents.blog_manager.run(prompt)
+            # Extract JSON substring
+            match = re.search(r"\{[\s\S]*\}", ai_raw)
+            if match:
+                ai_output = json.loads(match.group(0))
+        except Exception:
+            ai_output = None
+
+        if ai_output:
+            # Validate and coerce into Pydantic models, with safe fallbacks
+            try:
+                # Overrides
+                if request.page_title_override:
+                    ai_output["page_title"] = request.page_title_override
+                if request.page_subtitle_override:
+                    ai_output["page_subtitle"] = request.page_subtitle_override
+
+                how_it_works_items = [
+                    HowItWorksStep(
+                        step=max(1, int(item.get("step", idx + 1))),
+                        title=str(item.get("title", ""))[:120],
+                        description=str(item.get("description", ""))[:300],
+                    )
+                    for idx, item in enumerate(ai_output.get("how_it_works", []))
+                ]
+
+                # Ensure step numbering sequential starting at 1
+                for idx, step in enumerate(how_it_works_items):
+                    step.step = idx + 1
+
+                faq_items = [
+                    FAQItem(
+                        question=str(item.get("question", ""))[:200],
+                        answer=str(item.get("answer", ""))[:600],
+                    )
+                    for item in ai_output.get("faq", [])
+                ]
+
+                # Build SEO block with safe coercion
+                seo_obj = ai_output.get("seo", {}) if isinstance(ai_output.get("seo", {}), dict) else {}
+                meta_title = str(seo_obj.get("meta_title", ai_output.get("page_title", page_title_default)))[:120]
+                # Default description from subtitle, trimmed to typical snippet length if missing
+                meta_desc_raw = str(seo_obj.get("meta_description", ai_output.get("page_subtitle", page_subtitle_default)))
+                meta_description = meta_desc_raw[:180]
+                extracted_keywords = [str(k).strip() for k in (seo_obj.get("extracted_keywords") or []) if str(k).strip()]
+
+                # If require_seo, enforce presence of extracted keywords
+                if request.require_seo and not extracted_keywords:
+                    raise ValueError("SEO analysis required but missing extracted_keywords")
+
+                return LandingPageResponse(
+                    page_title=str(ai_output.get("page_title", page_title_default))[:120],
+                    page_subtitle=str(ai_output.get("page_subtitle", page_subtitle_default))[:300],
+                    how_it_works=how_it_works_items or [
+                        HowItWorksStep(step=1, title="Create an account", description=f"Sign up to start using {request.tool_name}."),
+                        HowItWorksStep(step=2, title="Add your inputs", description="Provide notes, files, or text to generate outputs."),
+                    ],
+                    faq=faq_items or [
+                        FAQItem(question="Can I cancel anytime?", answer="Yes, you can cancel from your dashboard."),
+                        FAQItem(question="Do you offer student discounts?", answer="Yes, verified students receive discounts."),
+                    ],
+                    seo=LandingPageSEO(
+                        meta_title=meta_title,
+                        meta_description=meta_description,
+                        extracted_keywords=extracted_keywords[:12],
+                    ),
+                )
+            except Exception:
+                pass
+
+        # Fallback static structure if AI generation fails
+        if request.strict_ai:
+            raise ValueError("AI generation failed and strict_ai is enabled")
+        how_it_works: List[HowItWorksStep] = [
+            HowItWorksStep(
+                step=1,
+                title="Create an account",
+                description=f"Sign up in seconds to start using {request.tool_name}.",
+            ),
+            HowItWorksStep(
+                step=2,
+                title="Add your inputs",
+                description="Provide notes, files, or text to generate tailored outputs.",
+            ),
+        ]
+        faq: List[FAQItem] = [
+            FAQItem(
+                question="Can I cancel anytime?",
+                answer="Yes, cancel your subscription anytime from your dashboard.",
+            ),
+            FAQItem(
+                question="Do you offer student discounts?",
+                answer="Yes, verified students receive discounted pricing.",
+            ),
+        ]
+
+        # Fallback SEO metadata influenced by provided keywords
+        fallback_meta_title = page_title_default[:60]
+        # Build a concise meta description up to ~160 chars
+        fallback_meta_description = (page_subtitle_default or request.feature_summary)[:170]
+        fallback_keywords = [kw for kw in request.primary_keywords][:8]
+
+        return LandingPageResponse(
+            page_title=page_title_default,
+            page_subtitle=page_subtitle_default,
+            how_it_works=how_it_works,
+            faq=faq,
+            seo=LandingPageSEO(
+                meta_title=fallback_meta_title,
+                meta_description=fallback_meta_description,
+                extracted_keywords=fallback_keywords,
+            ),
+        )
+
+
+# Global landing page service instance
+landing_page_service = LandingPageService()
+
+
+def get_landing_page_service() -> LandingPageService:
+    """Get the landing page service instance."""
+    return landing_page_service
